@@ -41,6 +41,40 @@ def supports_stop_parameter(model_id: str) -> bool:
 # Replace the function in smolagents
 smolagents.models.supports_stop_parameter = supports_stop_parameter
 
+
+def remove_content_after_stop_sequences(content: str, stop_sequences: list[str]) -> str:
+    """Return the content before its first stop sequence, as an API `stop` would."""
+    for stop_sequence in stop_sequences:
+        content = content.split(stop_sequence)[0]
+    return content
+
+
+_original_litellm_model_call = LiteLLMModel.__call__
+
+
+def call_model_and_apply_stop_sequences(self, messages, stop_sequences=None, **kwargs):
+    """Call the model, then cut its reply where an API `stop` would have ended it."""
+    message = _original_litellm_model_call(
+        self, messages, stop_sequences=stop_sequences, **kwargs
+    )
+    # Models without `stop` support keep writing past <end_code> (made-up
+    # "Observation:" output, more code), and parse_code_blobs joins every code
+    # block in the reply into the code that runs. Cut after generation instead,
+    # as huggingface/smolagents#1802 does. Empty replies are left to smolagents'
+    # own error handling.
+    if (
+        stop_sequences
+        and message.content
+        and not supports_stop_parameter(self.model_id)
+    ):
+        message.content = remove_content_after_stop_sequences(
+            message.content, stop_sequences
+        )
+    return message
+
+
+LiteLLMModel.__call__ = call_model_and_apply_stop_sequences
+
 # Import agent_hints using absolute path
 sys.path.append(os.path.dirname(__file__))
 from agent_hints import AGENT_HINTS  # noqa: E402 # FIXME: smells bad
